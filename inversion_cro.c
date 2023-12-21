@@ -73,7 +73,7 @@ double complex PartSum(double n0,double hh,double complex n1,double r,double com
     return s;
 }
 
-double complex Impedance(int n, double n0, double om, double *rho, double *dep) {
+double complex Impedance(int n, double n0, double om, double complex *rho, double *dep) {
     int i, m;
     double complex ni,nim1;
     double complex Imp;
@@ -99,7 +99,7 @@ double complex Impedance(int n, double n0, double om, double *rho, double *dep) 
     return Imp;
 }
 
-double complex integral(int n,double hh,double r,double *rho,double *dep,double f)
+double complex integral(int n,double hh,double r,double complex *rho,double *dep,double f)
 {
     double complex PS;         // f  -  Hz!!!
     double complex intl = 0;
@@ -133,19 +133,39 @@ double complex integral(int n,double hh,double r,double *rho,double *dep,double 
 }
 
 
-double complex ImHz(int n, double r,double z,double f,double *rho, double *dep) {
+double complex ImHz(int n, double r,double z,double f,double complex *rho, double *dep) {
     return integral(n,z,r,rho,dep,f);
 }
 
 
-void fdfun(geometry geo, int nlay, int bfr,double *x, double *y, double *freqs) {
-    int i;
+void fdfun(geometry geo, int nlay, int bfr, double *x, double *cole, int *pol_inds, int pol_num, double *y, double *freqs) {
+    int i, j, polc;
     int freq_num = bfr;
     double complex refl;
+    double complex rho[nlay];
     double da = 0;
+    double m, tau, c;
     if(nlay>1) da = x[nlay];
-    for(i=0;i<freq_num;i++) {
-        refl = ImHz(nlay,geo.hor_dist,2*(geo.alt + da)+geo.ver_dist,freqs[i],x,&(x[nlay + 1]))*I/geo.prim ;
+    memset(rho, 0, sizeof(rho));
+
+    for(i=0;i<freq_num;i++){
+        if(pol_num > 0){
+	    polc = 0;
+	    for(j = 0; j < nlay; j++){
+                 if(j == pol_inds[polc]){
+	             m = 1 - cole[3*polc]/x[j];
+		     tau = cole[3*polc + 1];
+		     c = cole[3*polc + 2];
+		     rho[j] = x[j](1 - m(1 - 1/(1 + pow(2*M_PI*f*tau, c)*cexp(5*I*M_PI*c/2))));
+                     polc++;
+                 } else {
+                     rho[j] = x[j];
+	         }
+            }
+	} else {
+             for(j = 0; j < nlay; j++) rho[j] = x[j];
+	}
+        refl = ImHz(nlay,geo.hor_dist,2*(geo.alt + da)+geo.ver_dist,freqs[i],rho,&(x[nlay + 1]))*I/geo.prim ;
         y[2*i] = creal(refl);
         y[2*i+1] = cimag(refl);
         if(i>bfr) break;
