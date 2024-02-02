@@ -133,21 +133,22 @@ double complex integral(int n,double hh,double r,double complex *rho,double *dep
 }
 
 
-double complex ImHz(int n, double r,double z,double f,double *rho, double *dep) {
+double complex ImHz(int n, double r,double z,double f,double complex *rho, double *dep) {
     return integral(n,z,r,rho,dep,f);
 }
 
 
 void fdfun(geometry geo, int nlay, int bfr,double *x, double *cole, int *pol_inds, int pol_num, double *y, double *freqs) {
-    int i;
+    int i, polc, j;
     int freq_num = bfr;
     double complex refl;
     double complex rho[nlay];
     double da = 0;
-    double m, tau, c;
+    double m, tau, c, f;
     if(nlay>1) da = x[nlay];
     memset(rho, 0, sizeof(rho));
     for(i=0;i<freq_num;i++) {
+	f = freqs[i];
 	if(pol_num > 0){
 	    polc = 0;
 	    for(j = 0; j < nlay; j++){
@@ -155,7 +156,7 @@ void fdfun(geometry geo, int nlay, int bfr,double *x, double *cole, int *pol_ind
 	             m = 1 - cole[3*polc]/x[j];
 		     tau = cole[3*polc + 1];
 		     c = cole[3*polc + 2];
-		     rho[j] = x[j](1 - m(1 - 1/(1 + pow(2*M_PI*f*tau, c)*cexp(5*I*M_PI*c/2))));
+		     rho[j] = x[j]*(1 - m*(1 - 1/(1 + pow(2*M_PI*f*tau, c)*cexp(5*I*M_PI*c/2))));
                      polc++;
                  } else {
                      rho[j] = x[j];
@@ -184,7 +185,7 @@ void fdfun(geometry geo, int nlay, int bfr,double *x, double *cole, int *pol_ind
 
 
 // FK 1 step
-void proc(int n, int nlay, double *x, double *S, double z, double *h, double sg2) {
+void proc(int n, double *x, double *S, double z, double *h, double sg2) {
 // Square Root Matrix method for LSM(Kalman)
     int i,j,k;
     double f[n + 1],e[n + 1],d[2],bk,ck,dz;
@@ -218,6 +219,9 @@ int flinversion(geometry geo,
                 int bfr,// now it is the # of used frqss`
                 int nlay,
                 double *x_ini,
+		double *cole_ini,
+		int *pol_inds,
+		int pol_num,
                 double *dpth,
                 double *y_ini,
                 double *y_mes,
@@ -231,11 +235,13 @@ int flinversion(geometry geo,
     int lay_num = nlay;
     int freq_num = bfr;
     double y1[2*freq_num];
-    double dx[2*lay_num + 1],x0[2*lay_num + 1],x1[2*lay_num + 1],xini[2*lay_num + 1];
+    double dx[2*lay_num + 1 + 3*pol_num],x0[2*lay_num + 1],x1[2*lay_num + 1],xini[2*lay_num + 1];
+    double dcole[3*pol_num], cole0[3*pol_num], cole1[3*pol_num], coleini[pol_num];
+    double join_vec[lay_num + 1 + 3*pol_num];
     int charge = 1;
 
 
-    double Jacob[2*freq_num][lay_num + 1];
+    double Jacob[2*freq_num][lay_num + 1 + 3*pol_num];
     double res = 0;
     int i,j;
 
@@ -246,14 +252,12 @@ int flinversion(geometry geo,
         if(i<nlay-1)
             xini[i+nlay + 1] = x0[i+nlay + 1] = x1[i+nlay + 1] = dpth[i];
     }
+    for(i = 0; i < 3*pol_num; i++) coleini[i] = cole_ini[i];
 
-    // against nans!!
-    for(i=0;i<2*bfr;i++)
-        if(y_mes[i]<.001) y_mes[i] = .001;
 
     // first forward calculation for the model
     if(*residual<0) {
-        fdfun(geo,nlay, bfr,xini,y_ini, freqs);
+        fdfun(geo,nlay, bfr, xini, coleini, pol_inds, pol_num, y_ini, freqs);
         *residual = 0;
         for(j=0;j<2*bfr;j++) {
             double val = (y_ini[j]-y_mes[j])*(y_ini[j]-y_mes[j])*geo.w[j]*geo.w[j]/(2*bfr);
@@ -266,43 +270,60 @@ int flinversion(geometry geo,
         return 0;
 
     // Jacobian matrix calculation
-    for(i=0;i<nlay + 1;i++) {
-        for(j=0;j<nlay + 1;j++) {
+    for(i=0;i<nlay + 1 + 3*pol_num;i++) {
+        for(j=0;j<nlay + 1 + 3*pol_num;j++) {
             double k = 10;
-            x1[j] = x_ini[j] * ( (i!=j)? 1. : (1.-k*DELTA) );
-	    if(j == nlay)
-		 x1[j] = x_ini[j] - ( (i!=j)? 0. : 0.1);
+	    if(j < nlay) x1[j] = x_ini[j] * ( (i!=j)? 1. : (1.-k*DELTA) );
+
+	    if(j == nlay) x1[j] = x_ini[j] - ( (i!=j)? 0. : 0.1);
+
+	    if(j > nlay) cole1[j-nlay-1] = cole_ini[j] * ( (i!=j)? 1. : (1. - k*DELTA) );
         }
-        fdfun(geo,nlay, bfr,x1,y1, freqs);
+        fdfun(geo,nlay, bfr,x1, cole1, pol_inds, pol_num, y1, freqs);
 	double div = 1;
+
 	if (i < nlay){
             div = log(x1[i]/x_ini[i]);
-	} else{
+	}
+	if (i == nlay){
             div = 0.1;
         }
+        if (i > nlay){
+            div = log(cole1[i-nlay-1]/cole_ini[i-nlay-1]);
+	}
+
         for(j=0;j<2*bfr;j++) {
             Jacob[j][i] = log(fabs(y1[j]/y_ini[j]));
 	    if(isnan(Jacob[j][i])) Jacob[j][i] = 0;
             Jacob[j][i] = Jacob[j][i]/div;
         }
     }
-
+//We need to make joint variable of x + cole for proc update
     // Step (by step) a-la FK
     for(j=0;j<2*bfr;j++) {
-        proc(nlay+1,nlay,dx,S,log(fabs(y_ini[j]/y_mes[j])),Jacob[j],1./(geo.w[j]*y_mes[j]*geo.w[j]*y_mes[j]));
+        proc(nlay+1 + 3*pol_num,dx,S,log(fabs(y_ini[j]/y_mes[j])),Jacob[j],1./(geo.w[j]*y_mes[j]*geo.w[j]*y_mes[j]));
     }
 
-    for(i=0;i<nlay + 1;i++) {
+    for(i=0;i<nlay + 1 + 3*pol_num;i++) {
 	if(i < nlay)
            x0[i] = xini[i]*exp(-dx[i]);
-	else
+	if(i==nlay)
            x0[i] = xini[i] + dx[i];
-        if(isnan(x0[i])) x0[i] = xini[i];
-        if(x0[i]>upper[i]) x0[i] = upper[i];
-        if(x0[i]<lower[i]) x0[i] = lower[i];
+	if(i > nlay)
+	   cole0[i - nlay-1] = coleini[i - nlay-1]*exp(-dx[i]);
+	if(i <= nlay){
+           if(isnan(x0[i])) x0[i] = xini[i];
+           if(x0[i]>upper[i]) x0[i] = upper[i];
+           if(x0[i]<lower[i]) x0[i] = lower[i];
+	}
+	if(i > nlay){
+           if(isnan(cole0[i - nlay-1])) cole0[i - nlay-1] = coleini[i - nlay-1];
+	   if(cole0[i - nlay-1] > upper[i]) cole0[i - nlay-1] = upper[i];
+	   if(cole0[i - nlay-1] < lower[i]) cole0[i - nlay-1] = lower[i];
+	}
     }
 
-    fdfun(geo,nlay,bfr,x0,y_ini, freqs);
+    fdfun(geo,nlay,bfr,x0, cole0, pol_inds, pol_num, y_ini, freqs);
     for(j=0;j<2*bfr;j++){
         double val = (y_ini[j]-y_mes[j])*(y_ini[j]-y_mes[j])*geo.w[j]*geo.w[j]/(2*bfr);
         res += val;//(val>res)?val:res;
@@ -311,19 +332,28 @@ int flinversion(geometry geo,
     int cntr = 0;
     while(res>*residual*1.01) {
         if(cntr++ > 3) break;
-        for(i=0;i<nlay + 1;i++) {
-            dx[i]*=.5;
-	    if(i < nlay)
-                 x0[i] = x_ini[i]*exp(-dx[i]);
-            else
-		 x0[i] = x_ini[i] + dx[i];
-            if(isnan(x0[i])) x0[i] = xini[i];
-            if(x0[i]>upper[i]) x0[i] = upper[i];
-            if(x0[i]<lower[i]) x0[i] = lower[i];
+        for(i=0;i<nlay + 1 + 3*pol_num;i++) {
+        	if(i < nlay)
+                   x0[i] = xini[i]*exp(-dx[i]);
+	        if(i==nlay)
+                   x0[i] = xini[i] + dx[i];
+	       if(i > nlay)
+	           cole0[i - nlay-1] = coleini[i - nlay-1]*exp(-dx[i]);
+	       if(i <= nlay){
+                   if(isnan(x0[i])) x0[i] = xini[i];
+                   if(x0[i]>upper[i]) x0[i] = upper[i];
+                   if(x0[i]<lower[i]) x0[i] = lower[i];
+	       }
+	       if(i > nlay){
+                   if(isnan(cole0[i - nlay-1])) cole0[i - nlay-1] = coleini[i - nlay-1];
+	           if(cole0[i - nlay-1] > upper[i]) cole0[i - nlay-1] = upper[i];
+	           if(cole0[i - nlay - 1] < lower[i]) cole0[i - nlay - 1] = lower[i];
+	       }
         }
 
+
         res = 0;
-        fdfun(geo,nlay, bfr,x0,y_ini, freqs);
+        fdfun(geo,nlay, bfr,x0, cole0, pol_inds, pol_num, y_ini, freqs);
         for(j=0;j<2*bfr;j++){
             double val = (y_ini[j]-y_mes[j])*(y_ini[j]-y_mes[j])*geo.w[j]*geo.w[j]/(2*bfr);
             res += val;//(val>res)?val:res;
@@ -333,8 +363,13 @@ int flinversion(geometry geo,
     if(res>*residual) up[0]++;
     else up[0] = 0;
     *residual = res;
-    for(i=0;i<nlay + 1;i++)
-        x_ini[i] = x0[i];
+    for(i=0;i<nlay + 1 + 3*pol_num;i++){
+	if(i <= nlay){
+           x_ini[i] = x0[i];
+	} else{
+           cole_ini[i - nlay - 1] = cole0[i - nlay - 1];
+        }
+    }
     
     return 1;
 }
@@ -548,23 +583,65 @@ int main(int argc, char **argv)
     args[8 + 3*freq_num] = values[2];
     args[9 + 3*freq_num] = values[3];
     args[10 + 3*freq_num] = values[4];
+    
+//Read number of pol layers and their positions
+    fgets(buf, 2000, conf);
+    fgets(buf, 2000, conf);
+
+
+    is_digit = 0;
+    j = 0;
+    read_num = 0;
+    for(i = 0; i < 2000; i++){
+        if((buf[i]>='0' && buf[i]<='9')||buf[i]=='.'||buf[i]==','){
+               tmp[j] = buf[i];
+	       j++;
+	       is_digit = 1;
+	} else{
+               if(is_digit==1){
+		  values[read_num] = atof(tmp);
+		  read_num++;
+                  is_digit = 0;
+		  for(j = 0; j < 256; j++)
+	          tmp[j] = (char) 0;
+	       }
+	       j = 0;
+        }
+    }
+
+    int pol_num = values[0];
+    int pol_num_loc;
+    if(pol_num > 0){
+        pol_num_loc = pol_num;
+    } else{
+        pol_num_loc = 1;
+    }
+
+    int pol_inds[pol_num_loc];
+
+    if(pol_num==0) pol_inds[0] = -1;
+
+    for(i = 0; i < pol_num; i++) pol_inds[i] = values[1+i];
+
     printf("conf params obtained");
     geometry geo;
     char *data;
     //char time[23];
     //for double spaces
-    char time[16];
+    char time[13];
     double y_mes[2*freq_num];
     int lay_num = (int)(args[1] + 0.1);
     double rho[lay_num];
+    double cole[3*pol_num];
     double rho_DA_ini[4];
     double x_ini[lay_num + 1];
-    double S_ini[(lay_num + 1)*(lay_num+1)];
-    double S_pre[(lay_num + 1)*(lay_num+1)];
-    double S0[(lay_num+1)*(lay_num+1)];
+    double cole_ini[3*pol_num];
+    double S_ini[(lay_num + 1 + 3*pol_num)*(lay_num+1+3*pol_num)];
+    double S_pre[(lay_num + 1 + 3*pol_num)*(lay_num+1+3*pol_num)];
+    double S0[(lay_num+1+3*pol_num)*(lay_num+1+3*pol_num)];
     double y_ini[2*freq_num];
-    double upper[lay_num + 1];
-    double lower[lay_num + 1];
+    double upper[lay_num + 1 + 3*pol_num];
+    double lower[lay_num + 1 + 3*pol_num];
     double upper_ini[2];
     double lower_ini[2];
     int hor_dist_pos = (int)(args[8 + 3*freq_num]);
@@ -584,10 +661,18 @@ int main(int argc, char **argv)
     double weight = 1000.;
     for(int i=0;i<lay_num;i++)
         upper[i] = 20000;
-    upper[lay_num] = 2*d;
+    upper[lay_num] = d;
+    for(i = 0; i < pol_num; i++){
+        upper[lay_num + 1 + 3*i] = 20000;
+	lower[lay_num + 1 + 3*i] = 0.01;
+        upper[lay_num + 1 + 3*i+1] = 10;
+	lower[lay_num + 1 + 3*i+1] = 0.000001;
+        upper[lay_num + 1 + 3*i+2] = 3;
+	lower[lay_num + 1 + 3*i+2] = 0.000001;
+    }
     for(int i=0;i<lay_num;i++)
         lower[i] = 0.01;
-    lower[lay_num] = -2*d;
+    lower[lay_num] = -d;
     upper_ini[0] = 20000;
     upper_ini[1] = 0;
     lower_ini[0] = 0.01;
@@ -600,7 +685,7 @@ int main(int argc, char **argv)
     // Layers thicknesses are fixed here !!!
     for(int i=0;i<lay_num-1;i++,d*=args[3]) dpth[i] = d;
 
-    data = buf + 16; // it's an offset to skip time in the string
+    data = buf + 13; // it's an offset to skip time in the string
 
     FILE *fin  = fopen(argv[1],"rt");
     FILE *fout = fopen(argv[2],"wt");
@@ -621,9 +706,15 @@ int main(int argc, char **argv)
     for(int i=0;i<freq_num-1;i++)
         geo.w[i*2+1] = sqrt(geo.w[i*2+1]*geo.w[i*2+1]+geo.w[(i+1)*2+1]*geo.w[(i+1)*2+1]);
 
-
-    for(int lr = 0;lr<lay_num;lr++)
+    int lr;
+    for(lr = 0;lr<lay_num;lr++)
         rho[lr] = RES_INI;
+
+    for(lr = 0; lr < pol_num; lr++){
+        cole[3*lr] = RES_INI;
+	cole[3*lr + 1] = 0.001;
+        cole[3*lr + 2] = 0.5;	
+    }
 
     memset(x_ini,0,sizeof(x_ini));
     memset(S_ini,0,sizeof(S_ini));
@@ -631,6 +722,8 @@ int main(int argc, char **argv)
     for(int i=0;i<lay_num;i++)
         x_ini[i] = rho[i];
     x_ini[lay_num] = 0;
+    for(i = 0; i < 3*pol_num; i++)
+	cole_ini[i] = cole[i];
 
     for(i=0;fgets(buf,3000,fin);i++) {
         if(buf[0]=='/') {  // reading comments
@@ -643,6 +736,12 @@ int main(int argc, char **argv)
             printf("%s",buf);
             for(int lr = 0;lr<lay_num;lr++)
                 rho[lr] = RES_INI;
+            for(lr = 0; lr < pol_num; lr++){
+                cole[3*lr] = RES_INI;
+	        cole[3*lr + 1] = 0.001;
+                cole[3*lr + 2] = 0.5;	
+            }
+
             memset(buf,0,sizeof(buf));
             ft = 1;
             continue;
@@ -735,13 +834,16 @@ int main(int argc, char **argv)
 	rho_DA_ini[2] = 0;
 	rho_DA_ini[3] = 0;
         int itr;
+	double empty_cole[1];
+	int empty_pol_inds[1];
+	empty_pol_inds[0] = -1;
         for (itr = 0;itr < MAX_ITER; itr++) {
             double d_ini[4];
 	    memset(d_ini, 0, sizeof(d_ini));
 	    d_ini[0] = ERR_INI;
             d_ini[3] = 0.1;
             int up = 0;
-            flinversion(geo,1,1, rho_DA_ini,dpth,y_ini,y_mes,&res,&up, d_ini, freqs, upper_ini, lower_ini);
+            flinversion(geo,1,1, rho_DA_ini, empty_cole, empty_pol_inds, 0, dpth,y_ini,y_mes,&res,&up, d_ini, freqs, upper_ini, lower_ini);
             rho_ini = rho_DA_ini[0];
 	    if(sqrt(res) <STOP_VAL) break;
             if(up) break;
@@ -757,7 +859,7 @@ int main(int argc, char **argv)
         int iter = 0;
         //double res1;
 
-        double Sr[(lay_num + 1)*(lay_num+1)];
+        double Sr[(lay_num + 1 + 3*pol_num)*(lay_num+1+3*pol_num)];
         res = -1;
         up = 0;
 
@@ -766,18 +868,32 @@ int main(int argc, char **argv)
             // ordinary resistivity
             for(int i=nlay-1;i>=0;i--) {
                 if(i==nlay-1)
-                    S_ini[i+(nlay+1)*i] = ERR_INI;
+                    S_ini[i+(nlay+1+3*pol_num)*i] = ERR_INI;
                 else {
-                    S_ini[i+1+(nlay+1)*i] =
-                            COR_INI*ERR_INI/S_ini[i+1+(nlay+1)*(i+1)];
-                    S_ini[i+(nlay+1)*i] =
-                     sqrt(ERR_INI*ERR_INI-S_ini[i+1+(nlay+1)*i]*
-                            S_ini[i+1+(nlay+1)*i]);
+                    S_ini[i+1+(nlay+1+3*pol_num)*i] =
+                            COR_INI*ERR_INI/S_ini[i+1+(nlay+1+3*pol_num)*(i+1)];
+                    S_ini[i+(nlay+1+3*pol_num)*i] =
+                     sqrt(ERR_INI*ERR_INI-S_ini[i+1+(nlay+1+3*pol_num)*i]*
+                            S_ini[i+1+(nlay+1+3*pol_num)*i]);
                 }
-		S_ini[nlay + nlay*(nlay+1)] = 0.25;
+		S_ini[nlay + nlay*(nlay+1+3*pol_num)] = 0.25;
 		if(start_with_rho_ini)
                 	x_ini[i] = rho_ini;
             }
+	    for(i = nlay + 1; i < nlay+ 1 + 3*pol_num; i++){
+		switch(i%3){
+                    case 0:
+			    cole_ini[i] = rho_ini;
+			    break;
+		    case 1:
+			    cole_ini[i] = 0.001;
+			    break;
+	            case 2:
+			    cole_ini[i] = 0.5;
+			    break;
+		}
+	        S_ini[i + i*(nlay + 3*pol_num + 1)] = 0.1;
+	    }
 	    x_ini[nlay] = 0;
 	    //start_with_rho_ini = 0;
             ft = !ft;
@@ -785,19 +901,34 @@ int main(int argc, char **argv)
         } else { // restart S for the next point. x_ini is tied to the initial resistivity
             memset(S_ini,0,sizeof(S_ini));
             for(int i=nlay-1;i>=0;i--) {
-                S_ini[i+(nlay+1)*i] = S0[i+(nlay+1)*i];
+                S_ini[i+(nlay+1+3*pol_num)*i] = S0[i+(nlay+1+3*pol_num)*i];
                 if(i<nlay-1)
-                    S_ini[i+(nlay+1)*i+1] = S0[i+(nlay+1)*i+1];
+                    S_ini[i+(nlay+1+3*pol_num)*i+1] = S0[i+(nlay+1+3*pol_num)*i+1];
                 x_ini[i] = (rho_ini*(1-1./weight)+x_ini[i]/weight);
             }
 	    x_ini[nlay] = 0;
+	    for(i = nlay+1; i < nlay+1+3*pol_num; i++){
+                switch(i%3){
+                    case 0:
+			    cole_ini[i] = (rho_ini*(1-1./weight)+cole_ini[i]/weight);;
+			    break;
+		    case 1:
+			    cole_ini[i] = (0.001*(1-1./weight)+cole_ini[i]/weight);;
+			    break;
+	            case 2:
+			    cole_ini[i] = (0.5*(1-1./weight)+x_ini[i]/weight);;
+			    break;
+		}
+
+                S_ini[i+(nlay+1+3*pol_num)*i] = S0[i+(nlay+1+3*pol_num)*i];
+	    }
         }
         memcpy(Sr,S_ini,sizeof(Sr));
 
 	// itereative inversion for fixed layers
         for (iter = 0;iter < MAX_ITER; iter++) {
             memcpy(S_ini,Sr,sizeof(Sr));
-            flinversion(geo,freq_num,nlay,x_ini,dpth,y_ini,y_mes,&res,&up,S_ini, freqs, upper, lower);
+            flinversion(geo,freq_num,nlay,x_ini,cole_ini, pol_inds, pol_num, dpth,y_ini,y_mes,&res,&up,S_ini, freqs, upper, lower);
 	/*
         for(int i=0;i<nlay;i++) {
             double v = 0, v1 = 0;
@@ -840,8 +971,8 @@ int main(int argc, char **argv)
         for(int i=0;i<nlay+1;i++) {
             double v = 0, v1 = 0;
             for (int j=i;j<nlay+1;j++) {
-                v+= S_ini[i*(nlay+1)+j]*S_ini[i*(nlay+1)+j];
-                v1+= Sr[i*(nlay+1)+j]*Sr[i*(nlay+1)+j];
+                v+= S_ini[i*(nlay+1+3*pol_num)+j]*S_ini[i*(nlay+1+3*pol_num)+j];
+                v1+= Sr[i*(nlay+1+3*pol_num)+j]*Sr[i*(nlay+1+3*pol_num)+j];
             }
             fprintf(fout,"%.7f ",1 - sqrt(v/v1));
             printf("%f ",1 - sqrt(v/v1));
