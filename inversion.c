@@ -166,8 +166,8 @@ void fdfun(geometry geo, int nlay, int bfr,double *x, double *cole, int *pol_ind
              for(j = 0; j < nlay; j++) rho[j] = x[j];
 	}
         refl = ImHz(nlay,geo.hor_dist,2*(geo.alt + da)+geo.ver_dist,freqs[i],rho,&(x[nlay + 1]))*I/geo.prim ;
-        y[2*i] = creal(refl);
-        y[2*i+1] = cimag(refl);
+        y[2*i] = fabs(creal(refl));
+        y[2*i+1] = fabs(cimag(refl));
         if(i>bfr) break;
     }
     
